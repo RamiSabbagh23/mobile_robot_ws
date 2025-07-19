@@ -1,5 +1,5 @@
 cd ~/mobile_robot_ws
-colcon build
+colcon build 
 source install/setup.bash
 
 %% Spawn
