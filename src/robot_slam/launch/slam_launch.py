@@ -18,7 +18,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         TimerAction(
-            period=5.0,  # השהייה של 5 שניות
+            period=5.0,  # Pause Time
             actions=[slam_node]
         )
     ])

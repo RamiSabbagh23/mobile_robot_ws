@@ -8,3 +8,6 @@ log/
 **/__pycache__/
 *.pyc
 
+# PDFs 
+*.pdf
+*.gv
