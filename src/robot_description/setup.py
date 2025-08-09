@@ -13,7 +13,8 @@ setup(
     ('share/' + package_name, ['package.xml']),
     (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
 
-    # Install pioneer2dx model and its meshes
+    (os.path.join('share', package_name, 'urdf'), glob('urdf/*.xacro') + glob('urdf/*.urdf')),
+
     (os.path.join('share', package_name, 'models/pioneer2dx'), glob('models/pioneer2dx/*.*')),
     (os.path.join('share', package_name, 'models/pioneer2dx/meshes'), glob('models/pioneer2dx/meshes/*.*')),
 

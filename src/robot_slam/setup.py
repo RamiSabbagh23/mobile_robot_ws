@@ -14,13 +14,15 @@ setup(
         ('share/' + package_name, ['package.xml']),
         # Include launch files
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
+        # Include config files
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='rami',
     maintainer_email='ramisabbagh23@gmail.com',
     description='SLAM integration using slam_toolbox',
-    license='MIT',  # או כל רישיון אחר שתרצה
+    license='MIT',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [],

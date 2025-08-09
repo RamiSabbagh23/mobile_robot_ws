@@ -1,0 +1,167 @@
+<?xml version="1.0"?>
+<robot name="pioneer2dx" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ===== Constants (no launch-time args needed) ===== -->
+  <xacro:property name="WHEEL_RADIUS" value="0.11"/>
+  <xacro:property name="WHEEL_LENGTH" value="0.05"/>
+  <xacro:property name="WHEEL_SEPARATION" value="0.34"/>
+
+  <xacro:property name="BASE_TO_CHASSIS_Z" value="0.16"/>
+  <xacro:property name="BASE_TO_LIDAR_X"   value="0.2"/>
+  <xacro:property name="BASE_TO_LIDAR_Y"   value="0.0"/>
+  <xacro:property name="BASE_TO_LIDAR_Z"   value="0.36"/>
+  <xacro:property name="BASE_TO_CAMERA_X"  value="0.2"/>
+  <xacro:property name="BASE_TO_CAMERA_Y"  value="0.0"/>
+  <xacro:property name="BASE_TO_CAMERA_Z"  value="0.275"/>
+  <xacro:property name="BASE_TO_IMU_X"     value="0.0"/>
+  <xacro:property name="BASE_TO_IMU_Y"     value="0.0"/>
+  <xacro:property name="BASE_TO_IMU_Z"     value="0.2"/>
+
+  <material name="wheel_black">
+    <color rgba="0.05 0.05 0.05 1.0"/>
+  </material>
+  <material name="sensor_gray">
+    <color rgba="0.6 0.6 0.6 1.0"/>
+  </material>
+
+  <!-- ===== Links ===== -->
+  <link name="base_link"/>
+
+  <link name="chassis">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="5.67"/>
+      <inertia ixx="0.07" iyy="0.08" izz="0.10" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+
+    <!-- Visual mesh; SDF had +0.04 z visual offset -->
+    <visual>
+      <origin xyz="0 0 0.04" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://robot_description/models/pioneer2dx/meshes/chassis.dae"/>
+      </geometry>
+    </visual>
+
+    <!-- Simple box collision (0.445 x 0.277 x 0.17) -->
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.445 0.277 0.17"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Sensor frame markers (for RViz) -->
+  <!-- <link name="lidar_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.035" length="0.02"/>
+      </geometry>
+    </visual>
+  </link> -->
+
+  <!-- <link name="camera_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.04 0.04 0.04"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <link name="imu_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.03 0.03 0.03"/>
+      </geometry>
+    </visual>
+  </link> -->
+
+  <!-- Wheels -->
+  <link name="left_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="${WHEEL_RADIUS}" length="${WHEEL_LENGTH}"/></geometry>
+      <material name="wheel_black"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="${WHEEL_RADIUS}" length="${WHEEL_LENGTH}"/></geometry>
+    </collision>
+  </link>
+
+  <link name="right_wheel">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="${WHEEL_RADIUS}" length="${WHEEL_LENGTH}"/></geometry>
+      <material name="wheel_black"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="${WHEEL_RADIUS}" length="${WHEEL_LENGTH}"/></geometry>
+    </collision>
+  </link>
+
+  <!-- Rear caster (visual only) -->
+  <link name="caster_link">
+    <visual>
+      <!-- Rotate 90° about X so cylinder axis is Y (like your drive wheels) -->
+      <origin xyz="0 0 0" rpy="0 1.5708 0"/>
+      <geometry>
+        <cylinder radius="0.04" length="0.02"/>
+      </geometry>
+      <material name="wheel_black"/>
+    </visual>
+  </link>
+
+
+
+  <!-- ===== Joints ===== -->
+  <joint name="base_to_chassis" type="fixed">
+    <parent link="base_link"/>
+    <child link="chassis"/>
+    <origin xyz="0 0 ${BASE_TO_CHASSIS_Z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- <joint name="base_to_lidar" type="fixed">
+    <parent link="base_link"/>
+    <child link="lidar_link"/>
+    <origin xyz="${BASE_TO_LIDAR_X} ${BASE_TO_LIDAR_Y} ${BASE_TO_LIDAR_Z}" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="base_to_camera" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin xyz="${BASE_TO_CAMERA_X} ${BASE_TO_CAMERA_Y} ${BASE_TO_CAMERA_Z}" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="base_to_imu" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="${BASE_TO_IMU_X} ${BASE_TO_IMU_Y} ${BASE_TO_IMU_Z}" rpy="0 0 0"/>
+  </joint> -->
+
+  <!-- Wheel joints (put wheels below the chassis center) -->
+  <joint name="left_wheel_hinge" type="continuous">
+    <parent link="chassis"/>
+    <child link="left_wheel"/>
+    <origin xyz="0.1 0.17 -0.05" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <joint name="right_wheel_hinge" type="continuous">
+    <parent link="chassis"/>
+    <child link="right_wheel"/>
+    <origin xyz="0.1 -0.17 -0.05" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <joint name="chassis_to_caster" type="fixed">
+    <parent link="chassis"/>
+    <child link="caster_link"/>
+    <origin xyz="-0.200 0 -0.12" rpy="0 0 0"/>
+  </joint>
+
+</robot>

@@ -1,4 +1,5 @@
 from setuptools import setup
+from glob import glob
 
 package_name = 'robot_rviz'
 
@@ -7,14 +8,14 @@ setup(
     version='0.0.0',
     packages=[],
     data_files=[
-        ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
-        ('share/' + package_name + '/launch', ['launch/rviz.launch.py']),
-        ('share/' + package_name + '/rviz', ['rviz/robot_config.rviz']),
-        ('share/' + package_name, ['package.xml']),
+        ('share/ament_index/resource_index/packages', [f'resource/{package_name}']),
+        (f'share/{package_name}', ['package.xml']),
+        (f'share/{package_name}/launch', glob('launch/*.py')),
+        (f'share/{package_name}/rviz', glob('rviz/*.rviz')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='your_name',
-    description='RViz launch and config for Pioneer2dx',
+    maintainer='rami',
+    description='RViz launch and config for Pioneer2DX',
     license='MIT',
 )

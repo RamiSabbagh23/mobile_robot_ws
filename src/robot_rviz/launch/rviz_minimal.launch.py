@@ -6,12 +6,6 @@ import os
 import xacro
 
 def generate_launch_description():
-    rviz_config = os.path.join(
-        get_package_share_directory('robot_rviz'),
-        'rviz',
-        'robot_config.rviz'
-    )
-
     urdf_path = os.path.join(
         get_package_share_directory('robot_description'),
         'urdf',
@@ -22,16 +16,7 @@ def generate_launch_description():
     robot_description_xml = xacro.process_file(urdf_path).toxml()
     robot_description = ParameterValue(robot_description_xml, value_type=str)
 
-    return LaunchDescription([
-        Node(
-            package='rviz2',
-            executable='rviz2',
-            name='rviz2',
-            arguments=['-d', rviz_config],
-            output='screen'
-        ),
-        
-        Node(
+    rsp = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
         name='robot_state_publisher',
@@ -41,4 +26,12 @@ def generate_launch_description():
             'robot_description': robot_description
         }]
     )
-    ])
+
+    rviz = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        output='screen'
+    )
+
+    return LaunchDescription([rsp, rviz])

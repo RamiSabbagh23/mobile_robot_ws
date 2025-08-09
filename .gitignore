@@ -2,7 +2,11 @@
 build/
 install/
 log/
+backup/
+
 .colcon/
+src/robot_bridge
+src/robot_explore
 
 # Python cache
 **/__pycache__/
