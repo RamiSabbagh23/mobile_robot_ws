@@ -32,7 +32,9 @@ def generate_launch_description():
             package='gazebo_ros',
             executable='spawn_entity.py',
             name='spawn_pioneer2dx',
-            arguments=['-entity', 'pioneer2dx', '-file', model_path, '-x', '0', '-y', '0', '-z', '0.1'],
+            arguments=['-entity', 'pioneer2dx', '-file', model_path,
+                        '-x', '25.0', '-y', '-11.5', '-z', '0.1',
+                        '-R', '0.0', '-P', '0.0', '-Y', '3.14159'],
             output='screen',
             parameters=[{'use_sim_time': True}]
         ),
