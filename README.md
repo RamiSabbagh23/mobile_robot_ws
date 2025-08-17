@@ -1,6 +1,6 @@
 # 🤖 mobile_robot_ws
 
-A ROS 2 (Humble) workspace designed for simulating a mobile robot navigating through a maze using Gazebo for physics simulation, SLAM Toolbox for mapping and localization, and RViz for real-time visualization.
+A ROS 2 (Humble) workspace designed for simulating a mobile robot navigating through a maze using Gazebo for physics simulation, SLAM Toolbox for mapping and localization, RViz for real-time visualization, and an autonomous exploration node.  
 
 ---
 
@@ -8,10 +8,11 @@ A ROS 2 (Humble) workspace designed for simulating a mobile robot navigating thr
 
 This workspace includes the following packages:
 
-- 📦 **robot_description/** – URDF/SDF models and launch file to spawn the Pioneer robot.
-- 🌍 **robot_world/** – Maze world definition and Gazebo launch files.
-- 👁️ **robot_rviz/** – RViz configuration for visualization of sensors, TF, and the robot.
-- 🧭 **robot_slam/** – SLAM Toolbox integration for mapping and localization.
+- 📦 **robot_description/** – URDF/SDF models and launch file to spawn the Pioneer robot.  
+- 🌍 **robot_world/** – Maze world definition and Gazebo launch files.  
+- 👁️ **robot_rviz/** – RViz configuration for visualization of sensors, TF, and the robot.  
+- 🧭 **robot_slam/** – SLAM Toolbox integration for mapping and localization.  
+- 🚀 **autonomous_explorer/** – Wall-following exploration node (right-hand rule) using LaserScan and Twist.  
 
 ---
 
@@ -59,10 +60,15 @@ ros2 launch robot_slam slam_launch.py
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ```
 
+#### 🤖 Run Autonomous Explorer
+```bash
+ros2 run autonomous_explorer explorer_node
+```
+
 ---
 
 📝 **Note**  
-To perform SLAM and generate a map of the maze, be sure to run the full simulation, open RViz, and start the SLAM Toolbox concurrently:
+To perform SLAM with autonomous exploration, you can run the full simulation (maze + robot), then launch RViz, start SLAM Toolbox, and finally run the `autonomous_explorer` node:  
 
 ```bash
 # Terminal 1
@@ -73,4 +79,7 @@ ros2 launch robot_rviz rviz.launch.py
 
 # Terminal 3
 ros2 launch robot_slam slam_launch.py
+
+# Terminal 4
+ros2 run autonomous_explorer explorer_node
 ```
