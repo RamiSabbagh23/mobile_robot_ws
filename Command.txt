@@ -14,3 +14,6 @@ ros2 launch robot_slam slam_launch.py
 
 %% Twist
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
+
+%% explore
+ros2 run autonomous_explorer explorer_node
