@@ -93,7 +93,7 @@
       </sensor>
       <sensor name="lidar_sensor" type="ray">
         <pose>0.2 0 0.2 0 0 0</pose> <visualize>true</visualize>
-        <update_rate>15.0</update_rate>
+        <update_rate>30.0</update_rate>
         <ray>
           <scan>
             <horizontal>
@@ -103,7 +103,7 @@
           </scan>
           <range>
             <min>0.12</min>
-            <max>4.0</max>
+            <max>8.0</max>
             <resolution>0.01</resolution>
           </range>
           <noise>
