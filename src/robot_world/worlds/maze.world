@@ -1,15 +1,27 @@
 <?xml version="1.0" ?>
 <sdf version="1.6">
   <world name="maze_world">
+
+    <!-- Lights and ground -->
     <include>
       <uri>model://sun</uri>
     </include>
     <include>
       <uri>model://ground_plane</uri>
     </include>
+
+    <!-- Maze model -->
     <include>
       <uri>model://maze_world</uri>
       <pose>0 0 0 0 0 0</pose>
     </include>
+
+    <!-- GUI camera -->
+    <gui>
+      <camera name="user_camera">
+        <pose>0 0 75 0 1.5708 1.5708</pose>
+      </camera>
+    </gui>
+
   </world>
 </sdf>

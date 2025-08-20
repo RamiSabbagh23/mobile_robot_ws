@@ -24,7 +24,6 @@ setup(
     entry_points={
         'console_scripts': [
         'explorer_node = autonomous_explorer.explorer_node:main',
-        'right_wall_follower = autonomous_explorer.right_wall_follower:main',
     ],
     },
 )
