@@ -3,24 +3,39 @@ import math
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
 from rcl_interfaces.msg import SetParametersResult
 
-def clamp(x, lo, hi): return max(lo, min(hi, x))
+# TF2
+from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
+
+
+def clamp(x, lo, hi): 
+    return max(lo, min(hi, x))
+
+
+def yaw_from_quat(x, y, z, w):
+    # ZYX yaw
+    return math.atan2(2.0*(w*z + x*y), 1.0 - 2.0*(y*y + z*z))
+
 
 class SmoothRightFollower(Node):
     """
-    High-speed right-wall follower with larger clearances and robust corner handling.
+    High-speed right-wall follower with larger clearances, robust corner handling,
+    *plus* goal seeking with LiDAR line-of-sight (LOS) check.
 
     States:
       - ACQUIRE_RIGHT_WALL: forward with slight right bias until a consistent right wall is found.
       - TRACK_RIGHT_WALL: PD on right offset and wall angle (beams −90°, −45°), plus anticipatory
-                          left bend as the front narrows. Forward speed is limited by front distance,
-                          sensor detection headroom, turn demand, and right-wall confidence.
+                          left bend as the front narrows. Speed limited by front distance, sensor
+                          headroom, turn demand, and right-wall confidence.
       - CORNER_LEFT: when front & right are both close (convex inside corner), commit to a left arc
                      for a minimum time (ignores PD to avoid stall), then resume tracking.
       - BACKOFF: only for tight dead-ends (front+right+left close).
+      - GOAL_DRIVE: suspend wall-follow policy; drive directly to goal if within radius and LOS clear.
+      - GOAL_STOP: reached goal (within threshold); hold position (publish zeros).
 
     Two-beam geometry (−90° ≡ right, −45° ≡ front-right):
         dθ = 45° = π/4
@@ -35,6 +50,23 @@ class SmoothRightFollower(Node):
         # ---- Topics ----
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
+
+        # ---- Frames (TF) ----
+        self.declare_parameter('base_frame', 'base_link')
+        self.declare_parameter('global_frame', 'map')  # could be 'odom' if no map
+
+        # ---- Goal parameters ----
+        self.declare_parameter('enable_goal', True)
+        self.declare_parameter('goal_x', 0.0)
+        self.declare_parameter('goal_y', 0.0)
+        self.declare_parameter('goal_activate_radius', 5.0)  # [m] start goal mode if inside this radius
+        self.declare_parameter('goal_stop_thresh', 0.1)     # [m] stop within this distance to goal
+        self.declare_parameter('goal_los_width_deg', 12.0)   # [deg] LOS check sector width around bearing
+        self.declare_parameter('goal_clear_margin', 0.30)    # [m] need clearance: r_min >= dist - margin
+        self.declare_parameter('goal_v_max', 2.0)            # [m/s] cap in GOAL mode
+        self.declare_parameter('goal_w_gain', 1.25)          # yaw gain in GOAL mode
+        self.declare_parameter('goal_slow_radius', 2.0)      # [m] start slowing as we near goal
+        self.declare_parameter('goal_debug', True)
 
         # ---- Stand-off & detection (increased distances) ----
         self.declare_parameter('desired_right_dist', 2.00)   # larger stand-off to right wall (m)
@@ -67,7 +99,6 @@ class SmoothRightFollower(Node):
         self.declare_parameter('front_slowdown_gain', 1.10)  # exponent in front gating
 
         # ---- Sensor-aware forward gating (NEW) ----
-        # Limit speed by required detection headroom from LiDAR too.
         self.declare_parameter('time_headway_s', 0.60)       # desired headway time (s)
         self.declare_parameter('sensor_guard_frac', 0.80)    # use only this fraction of range_max
         self.declare_parameter('sensor_guard_margin_m', 0.30)# subtract small margin (m)
@@ -103,6 +134,20 @@ class SmoothRightFollower(Node):
         gp = self.get_parameter
         self.scan_topic      = gp('scan_topic').value
         self.cmd_topic       = gp('cmd_vel_topic').value
+        self.base_frame      = gp('base_frame').value
+        self.global_frame    = gp('global_frame').value
+
+        self.enable_goal     = bool(gp('enable_goal').value)
+        self.goal_x          = float(gp('goal_x').value)
+        self.goal_y          = float(gp('goal_y').value)
+        self.goal_radius     = float(gp('goal_activate_radius').value)
+        self.goal_thresh     = float(gp('goal_stop_thresh').value)
+        self.goal_los_w      = math.radians(float(gp('goal_los_width_deg').value))
+        self.goal_clear_m    = float(gp('goal_clear_margin').value)
+        self.goal_v_max      = float(gp('goal_v_max').value)
+        self.goal_w_gain     = float(gp('goal_w_gain').value)
+        self.goal_slow_r     = float(gp('goal_slow_radius').value)
+        self.goal_debug      = bool(gp('goal_debug').value)
 
         self.d_des           = float(gp('desired_right_dist').value)
         self.right_present   = float(gp('right_present_max').value)
@@ -159,8 +204,12 @@ class SmoothRightFollower(Node):
         self.scan_sub = self.create_subscription(LaserScan, self.scan_topic, self.on_scan, qos)
         self.cmd_pub  = self.create_publisher(Twist, self.cmd_topic, 10)
 
+        # ---- TF ----
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
         # ---- State ----
-        self.state = 'ACQUIRE_RIGHT_WALL'   # TRACK_RIGHT_WALL | CORNER_LEFT | BACKOFF
+        self.state = 'ACQUIRE_RIGHT_WALL'   # TRACK_RIGHT_WALL | CORNER_LEFT | BACKOFF | GOAL_DRIVE | GOAL_STOP
         self.state_enter_t = self.now_s()
         self.acquire_ok_count = 0
 
@@ -181,18 +230,24 @@ class SmoothRightFollower(Node):
         self.w_cmd_prev = 0.0
 
         self.debug_t_last = 0.0
+        self.goal_dbg_last = 0.0
 
         # 20 Hz control (3 m/s ≈ 0.15 m per tick)
         self.timer = self.create_timer(0.05, self.loop)
         self.get_logger().info(
-            f'Started SmoothRightFollower  scan="{self.scan_topic}"  cmd="{self.cmd_topic}"  v_nom={self.v_nom:.2f}'
+            f'Started SmoothRightFollower  scan="{self.scan_topic}"  cmd="{self.cmd_topic}"  v_nom={self.v_nom:.2f}  '
+            f'goal=({self.goal_x:.2f},{self.goal_y:.2f}) in {self.global_frame}, enable_goal={self.enable_goal}'
         )
 
         self.add_on_set_parameters_callback(self._on_param_change)
 
     # ---------- Utility ----------
-    def now_s(self): return self.get_clock().now().nanoseconds * 1e-9
-    def t_in_state(self): return self.now_s() - self.state_enter_t
+    def now_s(self): 
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def t_in_state(self): 
+        return self.now_s() - self.state_enter_t
+
     def set_state(self, s):
         if s != self.state:
             self.state = s
@@ -251,6 +306,41 @@ class SmoothRightFollower(Node):
             D = math.inf
         return alpha, D
 
+    # ---------- Goal helpers ----------
+    def _robot_pose_global(self):
+        """Return (x, y, yaw) of base in global_frame. None on TF failure."""
+        try:
+            ts = self.tf_buffer.lookup_transform(self.global_frame, self.base_frame, Time())
+            t = ts.transform.translation
+            q = ts.transform.rotation
+            x, y = float(t.x), float(t.y)
+            yaw = yaw_from_quat(q.x, q.y, q.z, q.w)
+            return x, y, yaw
+        except (LookupException, ConnectivityException, ExtrapolationException):
+            return None
+
+    def _goal_vector(self):
+        """Return (dist, bearing, occluded) where bearing is in robot frame (rad)."""
+        if not self.enable_goal:
+            return None
+        pose = self._robot_pose_global()
+        if pose is None:
+            return None
+        rx, ry, ryaw = pose
+        dx = self.goal_x - rx
+        dy = self.goal_y - ry
+        dist = math.hypot(dx, dy)
+        # Bearing relative to robot forward (base_link x-axis)
+        brg = math.atan2(dy, dx) - ryaw
+        brg = math.atan2(math.sin(brg), math.cos(brg))  # wrap to [-pi, pi]
+        # LOS check with LiDAR
+        if self.last_scan is None:
+            occluded = True
+        else:
+            r_min = self.sector_min(brg, self.goal_los_w)
+            occluded = (r_min + self.goal_clear_m) < dist
+        return dist, brg, occluded
+
     # ---------- Control loop ----------
     def loop(self):
         now = self.now_s()
@@ -284,19 +374,38 @@ class SmoothRightFollower(Node):
             )
             self.debug_t_last = now
 
-        # Dead-end (tight box) → BACKOFF
+        # Goal vector (if available)
+        gv = self._goal_vector() if self.enable_goal else None
+        if gv is not None:
+            gdist, gbrg, goccl = gv
+            if self.goal_debug and (now - self.goal_dbg_last) > 0.8:
+                self.get_logger().info(
+                    f"GOAL: d={gdist:.2f} brg={gbrg:+.2f} occl={goccl}"
+                )
+                self.goal_dbg_last = now
+        else:
+            gdist = math.inf
+            gbrg = 0.0
+            goccl = True
+
+        # Dead-end (tight box) → BACKOFF (unless already backing or stopped at goal)
         if (self.r_front_f < self.front_stop and
             self.r_right_f < self.corner_right_thresh - self.corner_hys and
             self.r_left_f  < self.corner_right_thresh - self.corner_hys and
-            self.state != 'BACKOFF'):
+            self.state not in ('BACKOFF', 'GOAL_STOP')):
             self.set_state('BACKOFF')
 
-        # Critical front safety
-        if self.r_front_f < self.front_stop and self.state not in ('BACKOFF', 'CORNER_LEFT'):
-            if self._is_corner(self.r_front_f, self.r_right_f):
+        # Critical front safety (avoid collisions even in GOAL_DRIVE)
+        if (self.r_front_f < self.front_stop and self.state not in ('BACKOFF', 'CORNER_LEFT', 'GOAL_STOP')):
+            if self._is_corner(self.r_front_f, self.r_right_f) and self.state != 'GOAL_DRIVE':
                 self._enter_corner()
             else:
                 self.set_state('BACKOFF')
+
+        # If in wall-following states and goal is close + clear → GOAL_DRIVE
+        if self.state in ('ACQUIRE_RIGHT_WALL', 'TRACK_RIGHT_WALL', 'CORNER_LEFT') and self.enable_goal:
+            if gdist <= self.goal_radius and not goccl:
+                self.set_state('GOAL_DRIVE')
 
         # --- State machine ---
         if self.state == 'ACQUIRE_RIGHT_WALL':
@@ -379,14 +488,53 @@ class SmoothRightFollower(Node):
             else:
                 self._send_smooth(0.0, 0.0, dt)
                 self.acquire_ok_count = 0
+                # After backing, re-acquire policy (do not jump into goal here)
                 self.set_state('ACQUIRE_RIGHT_WALL')
+
+        elif self.state == 'GOAL_DRIVE':
+            # If LOS blocked or goal outside radius, resume policy
+            if goccl or (gdist > self.goal_radius + 0.5):
+                # If we're blocked, just fall back to policy and let it clear
+                self.set_state('ACQUIRE_RIGHT_WALL')
+                self._send_smooth(0.0, 0.0, dt)
+                return
+
+            # Stop if reached goal
+            if gdist <= self.goal_thresh:
+                self.set_state('GOAL_STOP')
+                self._send_smooth(0.0, 0.0, dt)
+                return
+
+            # Goal controller
+            # Angular command to point to goal
+            w_des = clamp(self.goal_w_gain * gbrg, -self.w_max, +self.w_max)
+
+            # Linear speed: fast when far, slow near goal; also shaped by turn demand and safety gate
+            v_des = min(self.goal_v_max, self.v_nom)
+            if gdist < self.goal_slow_r:
+                v_des *= (gdist / max(1e-6, self.goal_slow_r))  # linear ramp-down near goal
+
+            # Reduce for turning
+            turn_frac = min(1.0, abs(w_des) / max(1e-6, self.w_max))
+            v_des *= (1.0 - self.turn_slowdown * turn_frac)
+
+            # Safety gate with front distance and sensor headroom (ignore wall-confidence term)
+            v_des = self._forward_speed_gate_goal(v_des, self.r_front_f)
+
+            self._send_smooth(v_des, w_des, dt)
+
+        elif self.state == 'GOAL_STOP':
+            # Hold position
+            self._send_smooth(0.0, 0.0, dt)
 
     # ---------- Helpers ----------
     def _is_corner(self, front_d, right_d):
         return (front_d < self.corner_front_thresh) and (right_d < self.corner_right_thresh)
 
     def _enter_corner(self):
-        self.set_state('CORNER_LEFT')
+        # Do not enter a corner arc from goal mode
+        if self.state != 'GOAL_DRIVE':
+            self.set_state('CORNER_LEFT')
 
     def _forward_speed_gate(self, v, front_dist, D):
         """
@@ -416,18 +564,40 @@ class SmoothRightFollower(Node):
 
         return clamp(v, 0.0, self.v_nom)
 
+    def _forward_speed_gate_goal(self, v, front_dist):
+        """
+        Goal-mode variant: apply items (1)-(3) from _forward_speed_gate, but without the
+        right-wall confidence term (4), because we're not tracking a wall now.
+        """
+        if front_dist <= self.front_stop:
+            v = 0.0
+        elif front_dist < self.front_clear:
+            x = (front_dist - self.front_stop) / max(1e-6, (self.front_clear - self.front_stop))
+            v *= (x ** self.front_slow_g)
+
+        v = min(v, max(0.0, (front_dist - self.front_stop) / max(1e-6, self.t_headway)))
+
+        usable = max(0.0, self.sensor_guard * self.rmax_last - self.sensor_margin)
+        v = min(v, max(0.0, (usable - self.front_stop) / max(1e-6, self.t_headway)))
+
+        return clamp(v, 0.0, min(self.v_nom, self.goal_v_max))
+
     def _send_smooth(self, v_des, w_des, dt):
-        # Clamp desireds
         w_des = clamp(w_des, -self.w_max, +self.w_max)
         v_des = clamp(v_des, 0.0 if v_des >= 0.0 else -self.v_floor, self.v_nom)
 
-        # Slew v
         dv_max = self.v_slew * dt
         v_cmd = self.v_cmd_prev + clamp(v_des - self.v_cmd_prev, -dv_max, +dv_max)
-        if v_cmd > 1e-6:
-            v_cmd = max(self.v_floor, v_cmd)
 
-        # Slew w
+        # Only apply v_floor when we actually intend to move forward
+        if v_des > 0.05:
+            if v_cmd > 0.0:
+                v_cmd = max(self.v_floor, v_cmd)
+        else:
+            # allow exact zero (no creep)
+            if abs(v_cmd) < 0.02:
+                v_cmd = 0.0
+
         dw_max = self.w_slew * dt
         w_cmd = self.w_cmd_prev + clamp(w_des - self.w_cmd_prev, -dw_max, +dw_max)
 
@@ -435,14 +605,18 @@ class SmoothRightFollower(Node):
         self.w_cmd_prev = w_cmd
         self.send(v_cmd, w_cmd)
 
+
     # ---------- Live param updates ----------
     def _on_param_change(self, params):
         for p in params:
-            if p.name in ('Kp_e','Kd_e','Kp_a','Kd_a','v_nom','w_max'):
-                setattr(self, p.name, float(p.value))
-            elif p.name == 'desired_right_dist':
+            name = p.name
+            if name in ('Kp_e','Kd_e','Kp_a','Kd_a','v_nom','w_max','goal_x','goal_y','goal_v_max','goal_w_gain','goal_slow_radius'):
+                setattr(self, name if name != 'goal_slow_radius' else 'goal_slow_r', float(p.value))
+            elif name in ('enable_goal','goal_debug'):
+                setattr(self, name, bool(p.value))
+            elif name == 'desired_right_dist':
                 self.d_des = float(p.value)
-            elif p.name in (
+            elif name in (
                 'range_ewma_alpha','deriv_alpha','deriv_clip','v_slew','w_slew','v_floor',
                 'turn_slowdown','front_slowdown_gain','front_stop','front_clear',
                 'right_present_max','acquire_consistency_frames','acquire_right_max',
@@ -450,9 +624,11 @@ class SmoothRightFollower(Node):
                 'corner_front_thresh','corner_right_thresh','corner_min_arc_s',
                 'corner_v_scale','corner_w_scale','corner_exit_front','corner_exit_band','corner_hysteresis',
                 'front_width_deg','right_width_deg','fr_width_deg','left_width_deg',
-                'time_headway_s','sensor_guard_frac','sensor_guard_margin_m','reacquire_v_scale'
+                'time_headway_s','sensor_guard_frac','sensor_guard_margin_m','reacquire_v_scale',
+                'goal_activate_radius','goal_stop_thresh','goal_los_width_deg','goal_clear_margin',
+                'base_frame','global_frame'
             ):
-                val = float(p.value) if p.name not in ('acquire_consistency_frames',) else int(p.value)
+                # map external param names to attributes (floats unless noted)
                 mapname = {
                     'range_ewma_alpha':'rng_alpha',
                     'deriv_alpha':'deriv_alpha',
@@ -487,16 +663,28 @@ class SmoothRightFollower(Node):
                     'sensor_guard_frac':'sensor_guard',
                     'sensor_guard_margin_m':'sensor_margin',
                     'reacquire_v_scale':'reacq_vscale',
+                    'goal_activate_radius':'goal_radius',
+                    'goal_stop_thresh':'goal_thresh',
+                    'goal_los_width_deg': None,
+                    'goal_clear_margin':'goal_clear_m',
+                    'base_frame':'base_frame',
+                    'global_frame':'global_frame',
                 }
-                attr = mapname[p.name]
-                if attr is None:
-                    if p.name == 'front_width_deg': self.front_w = math.radians(val)
-                    if p.name == 'right_width_deg': self.right_w = math.radians(val)
-                    if p.name == 'fr_width_deg':    self.fr_w    = math.radians(val)
-                    if p.name == 'left_width_deg':  self.left_w  = math.radians(val)
-                else:
-                    setattr(self, attr, val)
+                attr = mapname[name]
+                if name == 'acquire_consistency_frames':
+                    self.need_frames = int(p.value)
+                elif name in ('front_width_deg','right_width_deg','fr_width_deg','left_width_deg'):
+                    val = float(p.value)
+                    if name == 'front_width_deg': self.front_w = math.radians(val)
+                    if name == 'right_width_deg': self.right_w = math.radians(val)
+                    if name == 'fr_width_deg':    self.fr_w    = math.radians(val)
+                    if name == 'left_width_deg':  self.left_w  = math.radians(val)
+                elif name == 'goal_los_width_deg':
+                    self.goal_los_w = math.radians(float(p.value))
+                elif attr is not None:
+                    setattr(self, attr, float(p.value) if name not in ('base_frame','global_frame') else str(p.value))
         return SetParametersResult(successful=True)
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -509,6 +697,7 @@ def main(args=None):
         node.send(0.0, 0.0)
         node.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
