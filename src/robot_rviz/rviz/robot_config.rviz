@@ -190,7 +190,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: odom
+    Fixed Frame: map
     Frame Rate: 30
   Name: root
   Tools:
@@ -232,26 +232,21 @@ Visualization Manager:
   Value: true
   Views:
     Current:
-      Class: rviz_default_plugins/ThirdPersonFollower
-      Distance: 10
+      Angle: 0
+      Class: rviz_default_plugins/TopDownOrtho
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
-      Focal Point:
-        X: 0.0009759669774211943
-        Y: -0.0011220906162634492
-        Z: -1.5504948578382027e-06
-      Focal Shape Fixed Size: true
-      Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.8999999761581421
-      Target Frame: base_link
-      Value: ThirdPersonFollower (rviz_default_plugins)
-      Yaw: 3.1414999961853027
+      Scale: 9
+      Target Frame: map
+      Value: TopDownOrtho (rviz_default_plugins)
+      X: 0
+      Y: 0
     Saved: ~
 Window Geometry:
   Camera:

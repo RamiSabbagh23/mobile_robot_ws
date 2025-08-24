@@ -11,6 +11,8 @@ ros2 launch robot_rviz rviz.launch.py
 
 %% SLAM
 ros2 launch robot_slam slam_launch.py
+ros2 run robot_slam visited_map
+ros2 run robot_slam visited_map_stats
 
 %% Twist
 ros2 run teleop_twist_keyboard teleop_twist_keyboard

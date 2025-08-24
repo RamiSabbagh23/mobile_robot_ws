@@ -23,7 +23,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-        'explorer_node = autonomous_explorer.explorer_node:main',
-    ],
+            'explorer_node = autonomous_explorer.explorer_node:main',
+            'astar_plan = autonomous_explorer.astar_plan:main',
+        ],
     },
 )

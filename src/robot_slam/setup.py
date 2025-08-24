@@ -25,6 +25,9 @@ setup(
     license='MIT',
     tests_require=['pytest'],
     entry_points={
-        'console_scripts': [],
+        'console_scripts': [
+            'visited_map = robot_slam.visited_map:main',
+            'visited_map_stats = robot_slam.visited_map_stats:main',
+        ],
     },
 )

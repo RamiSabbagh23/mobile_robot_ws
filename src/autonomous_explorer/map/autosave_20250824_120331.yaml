@@ -1,0 +1,6 @@
+image: autosave_20250824_120331.pgm
+resolution: 0.050000001
+origin: [-27.704252083, -13.902801892, 0.000000000]
+negate: 0
+occupied_thresh: 0.650
+free_thresh: 0.196
