@@ -1,3 +1,4 @@
+
 # 🤖 mobile_robot_ws
 
 A ROS 2 (Humble) workspace designed for simulating a mobile robot navigating through a maze using Gazebo for physics simulation, SLAM Toolbox for mapping and localization, RViz for real-time visualization, and an autonomous exploration node.
@@ -73,12 +74,6 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ros2 run autonomous_explorer explorer_node
 ```
 
-#### 🤖 Run Autonomous Explorer
-
-```bash
-ros2 run autonomous_explorer explorer_node
-```
-
 ---
 
 ## 🧭 Full Procedure: Mapping, Localization, Planning and Navigation
@@ -109,7 +104,13 @@ ros2 run autonomous_explorer explorer_node
 ```bash
 # Terminal 2: Localization
 ros2 launch robot_localization localization.launch.py
+```
 
+🟡 **Important:** After RViz opens, click the "2D Pose Estimate" tool and set the initial pose of the robot in the map.
+
+Then:
+
+```bash
 # Terminal 3: A* Planning
 ros2 run autonomous_explorer astar_plan --ros-args -p goal_x:=0.0 -p goal_y:=0.0
 
@@ -125,8 +126,6 @@ This sequence reuses the saved map for localization and executes navigation to t
 
 ### 🧭 A* Planner
 
-The `astar_plan.py` node plans a collision-free path in occupancy grid maps (e.g., `my_map1.yaml`) and saves it to CSV/YAML:
-
 ```bash
 ros2 run autonomous_explorer astar_plan --ros-args -p goal_x:=-10.0 -p goal_y:=0.0
 ```
@@ -135,8 +134,6 @@ ros2 run autonomous_explorer astar_plan --ros-args -p goal_x:=-10.0 -p goal_y:=0
 - Saves to: `path/my_route.csv` and `my_route.yaml`
 
 ### 🚗 Pure Pursuit Follower
-
-The `pure_pursuit_follow.py` node tracks the planned path using a differential-drive Pure Pursuit controller:
 
 ```bash
 ros2 run autonomous_explorer pure_pursuit_follow
@@ -177,6 +174,7 @@ git submodule update --init --recursive --force
 
 ---
 
+
 ## 📤 Repository Upload
 
 After making changes, you can check and push to the remote:
@@ -186,4 +184,62 @@ git status
 git add .
 git commit -m "update message here"
 git push origin
+```
+
+---
+
+
+## 📦 Required ROS 2 Packages
+
+Before using this workspace, make sure the following packages are installed in your ROS 2 Humble environment:
+
+### 🔧 Core and Common Tools
+
+```bash
+sudo apt update && sudo apt install -y \
+  ros-humble-xacro \
+  ros-humble-joint-state-publisher \
+  ros-humble-joint-state-publisher-gui \
+  ros-humble-robot-state-publisher \
+  ros-humble-rviz2 \
+  ros-humble-tf2-ros \
+  ros-humble-tf-transformations \
+  ros-humble-geometry-msgs \
+  ros-humble-nav-msgs \
+  ros-humble-sensor-msgs \
+  ros-humble-std-msgs
+```
+
+### 🧭 SLAM Toolbox
+
+```bash
+sudo apt install ros-humble-slam-toolbox
+```
+
+### 🌍 Gazebo (Classic) + ROS Integration
+
+```bash
+sudo apt install -y \
+  ros-humble-gazebo-ros \
+  ros-humble-gazebo-plugins \
+  ros-humble-gazebo-ros-pkgs \
+  ros-humble-gazebo-ros2-control
+```
+
+### 🧭 Localization (AMCL from Nav2)
+
+```bash
+sudo apt install ros-humble-nav2-amcl ros-humble-nav2-map-server
+```
+
+### 🎮 Teleop (optional)
+
+```bash
+sudo apt install ros-humble-teleop-twist-keyboard
+```
+
+Make sure Gazebo Classic is correctly installed (comes with `ros-humble-desktop`) and sourced:
+
+```bash
+sudo apt install ros-humble-desktop
 ```
