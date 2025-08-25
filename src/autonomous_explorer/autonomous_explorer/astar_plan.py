@@ -7,15 +7,16 @@ Default folders (no PC-specific paths needed):
   - Maps: <ws>/src/autonomous_explorer/map
   - Saved paths & overlays: <ws>/src/autonomous_explorer/path
 These are auto-created. You can override with params:
-  - map_yaml_path (string) : explicit YAML path
-  - map_folder_abs (string): folder to scan for newest YAML
+  - map_yaml_path (string) : explicit YAML path (absolute, ~, $VARS, or relative to map_dir)
+  - map_folder_abs (string): folder to scan for newest YAML (if no map_yaml_path)
   - save_folder_abs (string): folder to save CSV/YAML/PNG
 
 Start pose sources (priority):
-  1) TF map->base_link
-  2) TF map->odom + /odom (nav_msgs/Odometry)
-  3) /pose (geometry_msgs/PoseStamped in "map")
-  4) start_x/start_y parameters
+  1) /amcl_pose (geometry_msgs/PoseWithCovarianceStamped in "map")
+  2) TF map->base_link
+  3) TF map->odom + /odom (nav_msgs/Odometry)
+  4) /pose (geometry_msgs/PoseStamped in "map")
+  5) start_x/start_y parameters
 
 Inflation radius = robot_radius_m + safety_margin_m.
 
@@ -33,7 +34,7 @@ from rclpy.node import Node
 from rclpy.time import Time
 from rclpy.duration import Duration
 
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import Path, Odometry
 from builtin_interfaces.msg import Time as RosTime
 from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
@@ -150,9 +151,9 @@ class AStarPlanner(Node):
         self.declare_parameter('save_folder_abs', '')    # optional override
         self.declare_parameter('goal_x', 0.0)
         self.declare_parameter('goal_y', 0.0)
-        self.declare_parameter('robot_radius_m', 0.10)
-        self.declare_parameter('safety_margin_m', 0.25)
-        self.declare_parameter('unknown_is_free', False)
+        self.declare_parameter('robot_radius_m', 0.30)
+        self.declare_parameter('safety_margin_m', 0.75)
+        self.declare_parameter('unknown_is_free', True)
         self.declare_parameter('publish_path_topic', '/astar_path')
         self.declare_parameter('tf_wait_s', 3.0)
         self.declare_parameter('start_x', 0.0)
@@ -161,18 +162,20 @@ class AStarPlanner(Node):
         # Save options
         self.declare_parameter('save_path', True)
         self.declare_parameter('save_format', 'both')  # 'csv' | 'yaml' | 'both'
-        self.declare_parameter('save_basename', '')    # if empty -> <map_stem>_astar_path
+        self.declare_parameter('save_basename', 'my_route')    # if empty -> <map_stem>_astar_path
 
         topic = self.get_parameter('publish_path_topic').get_parameter_value().string_value
         self.path_pub = self.create_publisher(Path, topic, 1)
 
-        # TF + fallbacks
+        # TF + pose sources
         self.tf_buffer = Buffer(cache_time=Duration(seconds=10.0))
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.last_odom = None
         self.last_pose_map = None
+        self.last_amcl_pose = None  # <-- NEW: latest /amcl_pose
         self.create_subscription(Odometry, '/odom', self._odom_cb, 10)
         self.create_subscription(PoseStamped, '/pose', self._pose_cb, 10)
+        self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', self._amcl_cb, 10)  # <-- NEW
 
         # Resolve folders (prefer <ws>/src/<pkg>/<rel>, then share/<pkg>/<rel>, then cwd/<rel>)
         self.map_dir = self._resolve_package_dir(self.map_folder_rel,
@@ -180,13 +183,32 @@ class AStarPlanner(Node):
         self.save_dir = self._resolve_package_dir(self.path_folder_rel,
             self.get_parameter('save_folder_abs').get_parameter_value().string_value)
 
-        # Load map YAML + image
-        yaml_path = self.get_parameter('map_yaml_path').get_parameter_value().string_value
-        if not yaml_path:
-            yaml_path = newest_yaml_in(self.map_dir)
+        # ---------- Load map YAML + image (DEFAULT to my_map1.yaml) ----------
+        yaml_param = (self.get_parameter('map_yaml_path').get_parameter_value().string_value or '').strip()
+        yaml_path = ''
+        if yaml_param:
+            # expand ~ and $VARS; allow absolute or relative to map_dir
+            cand1 = os.path.abspath(os.path.expanduser(os.path.expandvars(yaml_param)))
+            if os.path.isabs(cand1) and os.path.exists(cand1):
+                yaml_path = cand1
+            else:
+                cand2 = os.path.abspath(os.path.join(self.map_dir, yaml_param))
+                if os.path.exists(cand2):
+                    yaml_path = cand2
+                else:
+                    raise FileNotFoundError(
+                        f"map_yaml_path provided but not found:\n  {cand1}\n  (also tried relative: {cand2})"
+                    )
+        else:
+            # default to <map_dir>/my_map1.yaml, else newest *.yaml in map_dir
+            preferred = os.path.join(self.map_dir, "my_map1.yaml")
+            yaml_path = preferred if os.path.exists(preferred) else newest_yaml_in(self.map_dir)
+
         yaml_path = os.path.abspath(yaml_path)
+        self.yaml_path = yaml_path
         self.map_stem = os.path.splitext(os.path.basename(yaml_path))[0]
 
+        # Read YAML and image
         meta = read_yaml_simple(yaml_path)
         img_path = os.path.join(os.path.dirname(yaml_path), str(meta['image']))
         self.res = float(meta['resolution'])
@@ -200,19 +222,16 @@ class AStarPlanner(Node):
         H, W = self.img_gray.shape
 
         # ----- Occupancy (base, no inflation) -----
-        # Occupancy (base, no inflation)
         norm = self.img_gray.astype(np.float32) / 255.0
         occ_prob = (1.0 - norm) if negate == 0 else norm
         unknown_mask = (occ_prob > free_th) & (occ_prob < occ_th)
 
-        self.unknown_mask_base = unknown_mask.copy()   # <-- KEEP THIS
+        self.unknown_mask_base = unknown_mask.copy()
 
         if not self.get_parameter('unknown_is_free').get_parameter_value().bool_value:
             base_occ = (occ_prob >= occ_th) | unknown_mask
         else:
             base_occ = (occ_prob >= occ_th)
-
-# Inflate base_occ -> self.occ_inflated ...
 
         # ----- Inflate: robot + safety margin -----
         r_robot = float(self.get_parameter('robot_radius_m').get_parameter_value().double_value)
@@ -231,9 +250,9 @@ class AStarPlanner(Node):
                 inflated_occ[y2[valid], x2[valid]] = True
 
         self.W, self.H = W, H
-        self.occ_base = base_occ           # original obstacles
-        self.occ_inflated = inflated_occ   # inflated no-go region
-        self.occ = self.occ_inflated       # planner uses inflated
+        self.occ_base = base_occ
+        self.occ_inflated = inflated_occ
+        self.occ = self.occ_inflated
         self.inflation_cells = r_cells
         self.get_logger().info(
             f"Loaded map {os.path.basename(yaml_path)} size=({W}x{H}) res={self.res:.3f}m "
@@ -299,6 +318,11 @@ class AStarPlanner(Node):
     def _pose_cb(self, msg: PoseStamped):
         self.last_pose_map = msg if msg.header.frame_id == 'map' else None
 
+    def _amcl_cb(self, msg: PoseWithCovarianceStamped):
+        # Prefer only poses in the 'map' frame; AMCL should publish in 'map'
+        if msg.header.frame_id == 'map':
+            self.last_amcl_pose = msg
+
     # ---------- grid/world ----------
     def world_to_grid(self, x, y):
         cx = (x - self.ox)/self.res
@@ -319,16 +343,28 @@ class AStarPlanner(Node):
         wait_s = float(self.get_parameter('tf_wait_s').get_parameter_value().double_value)
         deadline = self.get_clock().now() + Duration(seconds=wait_s)
 
-        # 1) map->base_link
+        # 1) /amcl_pose in 'map' (NEW highest priority)
         while self.get_clock().now() < deadline:
+            if self.last_amcl_pose is not None:
+                p = self.last_amcl_pose.pose.pose.position
+                return float(p.x), float(p.y), 'amcl_pose'
+            # Also try TF in the same waiting loop
             try:
-                tf = self.tf_buffer.lookup_transform('map', 'base_link', Time(), timeout=Duration(seconds=0.2))
+                tf = self.tf_buffer.lookup_transform('map', 'base_link', Time(), timeout=Duration(seconds=0.1))
                 t = tf.transform.translation
                 return float(t.x), float(t.y), 'tf_map_base_link'
             except (LookupException, ConnectivityException, ExtrapolationException):
                 rclpy.spin_once(self, timeout_sec=0.05)
 
-        # 2) map->odom + /odom
+        # 2) map->base_link (if not returned above)
+        try:
+            tf = self.tf_buffer.lookup_transform('map', 'base_link', Time(), timeout=Duration(seconds=0.2))
+            t = tf.transform.translation
+            return float(t.x), float(t.y), 'tf_map_base_link'
+        except (LookupException, ConnectivityException, ExtrapolationException):
+            pass
+
+        # 3) map->odom + /odom
         try:
             tf_mo = self.tf_buffer.lookup_transform('map', 'odom', Time(), timeout=Duration(seconds=0.2))
             if self.last_odom is not None:
@@ -339,12 +375,12 @@ class AStarPlanner(Node):
         except (LookupException, ConnectivityException, ExtrapolationException):
             pass
 
-        # 3) /pose in map
+        # 4) /pose in map
         if self.last_pose_map is not None:
             p = self.last_pose_map.pose.position
             return float(p.x), float(p.y), 'pose_topic_map'
 
-        # 4) params
+        # 5) params
         sx = float(self.get_parameter('start_x').get_parameter_value().double_value)
         sy = float(self.get_parameter('start_y').get_parameter_value().double_value)
         return sx, sy, 'params'
@@ -454,7 +490,7 @@ class AStarPlanner(Node):
 
         self.path_pub.publish(path_msg)
         self._save_path_files(path_cells)
-        self.get_logger().info(f"A* OK: waypoints={len(path_msg.poses)} length={length:.2f} m  time={dt:.1f} ms")
+        self.get_logger().info(f"A* OK: waypoints={len(path_msg.poses)} length={{:.2f}} m  time={{:.1f}} ms".format(length, dt))
         self._save_overlay_png(path_cells, sx, sy, gx, gy)
 
     # ---------- overlay (outside-only margin line) ----------
@@ -484,10 +520,6 @@ class AStarPlanner(Node):
 
         # Margin ONLY on known-free pixels that touch inflated
         outside_margin = known_free & (up | down | left_ | right)
-
-        # (Optional) one-pixel erosion to avoid outer map frame artifacts:
-        # outside_margin[[0,-1], :] = False
-        # outside_margin[:, [0,-1]] = False
 
         my, mx = np.where(outside_margin)
         img[my, mx, 0] = 128
@@ -527,8 +559,6 @@ class AStarPlanner(Node):
             self.get_logger().info(f"Saved overlay: {out_path}")
         except Exception as e:
             self.get_logger().warn(f"Overlay save failed: {e}")
-
-
 
     # ---------- saving path files ----------
     def _poses_cells_to_world(self, path_cells):

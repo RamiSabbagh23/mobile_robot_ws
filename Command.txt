@@ -19,3 +19,10 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 
 %% explore
 ros2 run autonomous_explorer explorer_node
+
+%% localization
+ros2 launch robot_localization localization.launch.py
+
+%% planning and nav
+ros2 run autonomous_explorer astar_plan   --ros-args   -p goal_x:=0.0 -p goal_y:=0.0 
+ros2 run autonomous_explorer pure_pursuit_follow   

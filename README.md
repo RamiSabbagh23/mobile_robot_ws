@@ -13,6 +13,7 @@ This workspace includes the following packages:
 - 👁️ **robot_rviz/** – RViz configuration for visualization of sensors, TF, and the robot.
 - 🧭 **robot_slam/** – SLAM Toolbox integration for mapping and localization.
 - 🚀 **autonomous_explorer/** – Wall-following exploration node (right-hand rule) using LaserScan and Twist.
+- 📍 **astar_plan.py + pure_pursuit_follow.py** – Path planning using A* and trajectory following using a dynamic Pure Pursuit controller with RViz visualization.
 
 ---
 
@@ -72,24 +73,78 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ros2 run autonomous_explorer explorer_node
 ```
 
----
-
-📝 **Note**\
-To perform SLAM with autonomous exploration, you can run the full simulation (maze + robot), then launch RViz, start SLAM Toolbox, and finally run the `autonomous_explorer` node:
+#### 🤖 Run Autonomous Explorer
 
 ```bash
-# Terminal 1
-ros2 launch robot_world maze_with_pioneer.launch.py
-
-# Terminal 2
-ros2 launch robot_rviz rviz.launch.py
-
-# Terminal 3
-ros2 launch robot_slam slam_launch.py
-
-# Terminal 4
 ros2 run autonomous_explorer explorer_node
 ```
+
+---
+
+## 🧭 Full Procedure: Mapping, Localization, Planning and Navigation
+
+1. **Start Simulation with Mapping**
+   Open these in 4 terminals:
+
+```bash
+# Terminal 1: Maze + Robot
+ros2 launch robot_world maze_with_pioneer.launch.py
+
+# Terminal 2: RViz
+ros2 launch robot_rviz rviz.launch.py
+
+# Terminal 3: SLAM Toolbox
+ros2 launch robot_slam slam_launch.py
+
+# Terminal 4: Explorer Node
+ros2 run autonomous_explorer explorer_node
+```
+
+✅ When mapping is complete, a map will be saved in the `map/` folder.
+
+2. **Close all terminals except the one with the Maze (Terminal 1)**
+
+3. **Start Localization, Planning and Navigation**
+
+```bash
+# Terminal 2: Localization
+ros2 launch robot_localization localization.launch.py
+
+# Terminal 3: A* Planning
+ros2 run autonomous_explorer astar_plan --ros-args -p goal_x:=0.0 -p goal_y:=0.0
+
+# Terminal 4: Pure Pursuit Follower
+ros2 run autonomous_explorer pure_pursuit_follow
+```
+
+This sequence reuses the saved map for localization and executes navigation to the goal.
+
+---
+
+## 🧠 Path Planning and Control (A* + Pure Pursuit)
+
+### 🧭 A* Planner
+
+The `astar_plan.py` node plans a collision-free path in occupancy grid maps (e.g., `my_map1.yaml`) and saves it to CSV/YAML:
+
+```bash
+ros2 run autonomous_explorer astar_plan --ros-args -p goal_x:=-10.0 -p goal_y:=0.0
+```
+
+- Reads map from: `src/autonomous_explorer/map/my_map1.yaml`
+- Saves to: `path/my_route.csv` and `my_route.yaml`
+
+### 🚗 Pure Pursuit Follower
+
+The `pure_pursuit_follow.py` node tracks the planned path using a differential-drive Pure Pursuit controller:
+
+```bash
+ros2 run autonomous_explorer pure_pursuit_follow
+```
+
+- Requires a path file (auto-loads `my_route.csv` or `my_route.yaml`)
+- Publishes dynamic RViz topics: `/pp_path_full`, `/pp_path_remaining`, `/pp_goal`, `/pp_lookahead`, etc.
+- Includes ALIGN mode: robot turns to face initial heading before tracking
 
 ---
 

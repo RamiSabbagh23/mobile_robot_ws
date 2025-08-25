@@ -1,0 +1,34 @@
+amcl:
+  ros__parameters:
+    use_map_topic: true
+    scan_topic: /scan
+
+    odom_frame_id: odom
+    base_frame_id: base_link
+    global_frame_id: map
+
+    min_particles: 500
+    max_particles: 3000
+
+    update_min_d: 0.1
+    update_min_a: 0.2
+
+    resample_interval: 1
+    transform_tolerance: 0.5
+
+    laser_max_range: 8.0
+    laser_min_range: 0.12
+    laser_max_beams: 60
+    laser_z_hit: 0.95
+    laser_sigma_hit: 0.2
+    laser_z_rand: 0.05
+    laser_likelihood_max_dist: 2.0
+
+    recovery_alpha_slow: 0.0
+    recovery_alpha_fast: 0.0
+
+    alpha1: 0.2  # noise in rotation from rotation
+    alpha2: 0.2  # noise in rotation from translation
+    alpha3: 0.2  # noise in translation from translation
+    alpha4: 0.2  # noise in translation from rotation
+    alpha5: 0.0

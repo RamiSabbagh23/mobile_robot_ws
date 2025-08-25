@@ -6,11 +6,11 @@ SmoothRightFollower (full rewrite)
 - Right-wall following with PD control on perpendicular distance and wall angle
 - Goal drive mode with LiDAR LOS check (can be disabled)
 - Auto-save map once the robot returns within `return_radius` of its start pose:
-  * Save to `src/<package_name>/<map_folder_rel>/autosave_YYYYmmdd_HHMMSS.{pgm,yaml}`
-    (default map_folder_rel = "map")  ⟶ e.g., src/autonomous_explorer/map/
-  * If `map_folder_abs` is set, save exactly there instead.
-  * If Nav2 SaveMap service is enabled (`prefer_nav2_service:=true`) use it.
-  * Otherwise write from the last `nav_msgs/OccupancyGrid` we received on `map_topic`.
+  * Save as my_mapN.{pgm,yaml} (N increments each run) under:
+      - If `map_folder_abs` is set, exactly there.
+      - Else under src/<package_name>/<map_folder_rel>/ (preferred) or fallback locations.
+  * If Nav2 SaveMap service is enabled (`prefer_nav2_service:=true`) use it
+    (same my_mapN prefix). Otherwise write from the last OccupancyGrid.
   * Immediately stop and shut down the node after saving if `shutdown_after_save:=true`.
 
 Run example (explicit path):
@@ -19,7 +19,7 @@ Run example (explicit path):
     -p map_folder_abs:=/home/rami/mobile_robot_ws/src/autonomous_explorer/map \
     -p shutdown_after_save:=true
 """
-import os, math, datetime
+import os, re, math, datetime
 import numpy as np
 
 import rclpy
@@ -75,8 +75,8 @@ class SmoothRightFollower(Node):
         self.declare_parameter('goal_y', 0.0)
         self.declare_parameter('goal_activate_radius', 5.0)
         self.declare_parameter('goal_stop_thresh', 0.1)
-        self.declare_parameter('goal_los_width_deg', 10.0)
-        self.declare_parameter('goal_clear_margin', 0.25)
+        self.declare_parameter('goal_los_width_deg', 8.0)
+        self.declare_parameter('goal_clear_margin', 0.30)
         self.declare_parameter('goal_v_max', 2.0)
         self.declare_parameter('goal_w_gain', 1.25)
         self.declare_parameter('goal_slow_radius', 2.0)
@@ -716,12 +716,31 @@ class SmoothRightFollower(Node):
         os.makedirs(maps_dir, exist_ok=True)
         return maps_dir
 
+    # ---- NEW: choose next my_mapN prefix in maps_dir ----
+    def _next_my_map_prefix(self, maps_dir: str) -> str:
+        """
+        Scan maps_dir for files named my_map<number>.(yaml|pgm|png)
+        and pick the next available number.
+        """
+        base = "my_map"
+        max_n = 0
+        try:
+            for fn in os.listdir(maps_dir):
+                m = re.match(rf'^{re.escape(base)}(\d+)\.(yaml|pgm|png)$', fn)
+                if m:
+                    n = int(m.group(1))
+                    if n > max_n:
+                        max_n = n
+        except Exception:
+            pass
+        next_n = max_n + 1
+        return os.path.join(maps_dir, f"{base}{next_n}")
+
     def _do_save_map(self):
         """Try Nav2 SaveMap service, else write from last OccupancyGrid. Returns (ok, yaml_path_or_prefix)."""
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         maps_dir = self._resolve_maps_dir()
-        prefix = f"autosave_{timestamp}"
-        path_prefix = os.path.join(maps_dir, prefix)
+        # Use incremental my_mapN prefix instead of timestamp
+        path_prefix = self._next_my_map_prefix(maps_dir)
 
         # Nav2 service
         if self.prefer_nav2_service and self.save_client is not None and Nav2SaveMap is not None:

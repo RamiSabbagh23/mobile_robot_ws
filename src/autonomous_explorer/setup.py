@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'explorer_node = autonomous_explorer.explorer_node:main',
             'astar_plan = autonomous_explorer.astar_plan:main',
+            'pure_pursuit_follow = autonomous_explorer.pure_pursuit_follow:main',
         ],
     },
 )
