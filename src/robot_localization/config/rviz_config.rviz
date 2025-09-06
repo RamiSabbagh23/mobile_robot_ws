@@ -35,7 +35,7 @@ Visualization Manager:
       Cell Size: 1
       Class: rviz_default_plugins/Grid
       Color: 160; 160; 164
-      Enabled: true
+      Enabled: false
       Line Style:
         Line Width: 0.029999999329447746
         Value: Lines
@@ -48,7 +48,7 @@ Visualization Manager:
       Plane: XY
       Plane Cell Count: 10
       Reference Frame: <Fixed Frame>
-      Value: true
+      Value: false
     - Alpha: 1
       Class: rviz_default_plugins/RobotModel
       Collision Enabled: false
@@ -192,7 +192,7 @@ Visualization Manager:
     - Alpha: 1
       Buffer Length: 1
       Class: rviz_default_plugins/Path
-      Color: 98; 160; 234
+      Color: 26; 95; 180
       Enabled: true
       Head Diameter: 0.30000001192092896
       Head Length: 0.20000000298023224
@@ -215,12 +215,12 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /pp_path_done
+        Value: /pp_traj_amcl
       Value: true
     - Alpha: 1
       Buffer Length: 1
       Class: rviz_default_plugins/Path
-      Color: 249; 240; 107
+      Color: 246; 97; 81
       Enabled: true
       Head Diameter: 0.30000001192092896
       Head Length: 0.20000000298023224
@@ -243,7 +243,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /pp_path_remaining
+        Value: /pp_path_full
       Value: true
   Enabled: true
   Global Options:
@@ -300,11 +300,11 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 19.066818237304688
+      Scale: 20
       Target Frame: map
       Value: TopDownOrtho (rviz_default_plugins)
-      X: -1.550045371055603
-      Y: -2.58293080329895
+      X: 0
+      Y: 0
     Saved: ~
 Window Geometry:
   Displays:

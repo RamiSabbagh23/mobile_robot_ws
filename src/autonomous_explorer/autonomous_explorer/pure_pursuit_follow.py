@@ -2,12 +2,26 @@
 # -*- coding: utf-8 -*-
 """
 Pure Pursuit follower for differential-drive robots (ROS 2) — with *dynamic* RViz path publishing.
-Now with near-goal braking funnel, lookahead clamp near goal, and sticky stop + final align.
+Now with:
+  • AMCL trajectory publishing (/pp_traj_amcl) so you can see the *real* path in RViz.
+  • Live cross-track error topic (/pp_cross_track_error) for rqt_plot/PlotJuggler.
+  • On-shutdown CSV + PNG plots of error and a path-vs-trajectory overlay.
+
+Notes:
+  • Add a Path display in RViz for /pp_traj_amcl (frame_id = "map" by default).
+  • Plots auto-save to <plot_dir>/pp_error_*.png and <plot_dir>/pp_traj_vs_path_*.png.
+  • If matplotlib isn't installed, plot saving is skipped (CSV still saved).
+
+Typical run:
+  ros2 run autonomous_explorer pure_pursuit_follow \
+    --ros-args -p path_file:=/home/rami/mobile_robot_ws/src/autonomous_explorer/path/my_route.csv
 """
 
 import os
 import math
 import glob
+import time
+import datetime
 from typing import List, Tuple, Optional
 
 import numpy as np
@@ -22,6 +36,7 @@ from geometry_msgs.msg import Twist, PoseStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import Path
 from sensor_msgs.msg import LaserScan
 from visualization_msgs.msg import Marker
+from std_msgs.msg import Float32
 
 from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
 
@@ -29,6 +44,15 @@ try:
     from ament_index_python.packages import get_package_share_directory
 except Exception:
     get_package_share_directory = None
+
+# Optional plotting (safe to miss)
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    _HAS_MPL = True
+except Exception:
+    _HAS_MPL = False
 
 
 # ----------------------- small utils -----------------------
@@ -85,11 +109,11 @@ class PurePursuitFollower(Node):
         self.declare_parameter('goal_pos_tol', 0.2)    # m
         self.declare_parameter('goal_yaw_tol_deg', 20.0)
 
-        # >>> New near-goal heuristics <<<
+        # >>> Near-goal heuristics <<<
         self.declare_parameter('goal_slowdown_dist', 5.0)         # m: start easing down this far out
         self.declare_parameter('allow_below_vmin_near_goal', True)# let v drop below v_min inside slowdown_dist
         self.declare_parameter('Ld_goal_scale', 0.6)              # Ld <= Ld_goal_scale * remaining
-        self.declare_parameter('goal_stop_margin', 1.5)          # m: stop slightly before goal
+        self.declare_parameter('goal_stop_margin', 1.5)           # m: stop slightly before goal
         self.declare_parameter('goal_dwell_s', 1.0)               # s: hold still after stopping
         self.declare_parameter('goal_final_align', True)          # after stop, align yaw to path end
 
@@ -115,6 +139,16 @@ class PurePursuitFollower(Node):
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('pub_debug', True)
         self.declare_parameter('rate_hz', 50.0)
+
+        # >>> NEW: Trajectory publishing & logging/plots <<<
+        self.declare_parameter('traj_topic', '/pp_traj_amcl')
+        self.declare_parameter('traj_sample_dt', 0.10)       # seconds between points at minimum
+        self.declare_parameter('traj_sample_ds', 0.05)       # min move [m] to append point
+        self.declare_parameter('traj_max_points', 5000)
+        self.declare_parameter('error_topic', '/pp_cross_track_error')
+        self.declare_parameter('save_plots_on_shutdown', True)
+        self.declare_parameter('plot_dir', '')               # default: <path_folder>/plots
+        self.declare_parameter('log_csv_name', 'pp_error_log.csv')
 
         # --- Read params ---
         gp = self.get_parameter
@@ -153,12 +187,11 @@ class PurePursuitFollower(Node):
         self.goal_pos_tol   = float(gp('goal_pos_tol').value)
         self.goal_yaw_tol   = math.radians(float(gp('goal_yaw_tol_deg').value))
 
-        # New goal heuristics
         self.goal_slowdown_dist = float(gp('goal_slowdown_dist').value)
         self.allow_below_vmin_near_goal = bool(gp('allow_below_vmin_near_goal').value)
-        self.Ld_goal_scale = float(gp('Ld_goal_scale').value)
+        self.Ld_goal_scale  = float(gp('Ld_goal_scale').value)
         self.goal_stop_margin = float(gp('goal_stop_margin').value)
-        self.goal_dwell_s = float(gp('goal_dwell_s').value)
+        self.goal_dwell_s   = float(gp('goal_dwell_s').value)
         self.goal_final_align = bool(gp('goal_final_align').value)
 
         self.resample_ds    = float(gp('resample_ds').value)
@@ -180,16 +213,28 @@ class PurePursuitFollower(Node):
         self.pub_debug      = bool(gp('pub_debug').value)
         self.rate_hz        = float(gp('rate_hz').value)
 
+        self.traj_topic     = gp('traj_topic').value
+        self.traj_sample_dt = float(gp('traj_sample_dt').value)
+        self.traj_sample_ds = float(gp('traj_sample_ds').value)
+        self.traj_max_pts   = int(gp('traj_max_points').value)
+        self.error_topic    = gp('error_topic').value
+        self.save_plots     = bool(gp('save_plots_on_shutdown').value)
+        self.plot_dir       = str(gp('plot_dir').value or '').strip()
+        self.log_csv_name   = str(gp('log_csv_name').value)
+
         # --- Publishers ---
         self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
 
-        # RViz debug pubs
+        # RViz pubs (kept: full + remaining; replaced 'done' with AMCL trajectory)
         self.path_full_pub      = self.create_publisher(Path, '/pp_path_full', 1)
-        self.path_done_pub      = self.create_publisher(Path, '/pp_path_done', 1)
         self.path_remaining_pub = self.create_publisher(Path, '/pp_path_remaining', 1)
         self.goal_pub           = self.create_publisher(PoseStamped, '/pp_goal', 1)
         self.lookahead_pub      = self.create_publisher(PoseStamped, '/pp_lookahead', 1) if self.pub_debug else None
         self.marker_pub         = self.create_publisher(Marker, '/pp_markers', 1) if self.pub_debug else None
+
+        # NEW: AMCL trajectory and error
+        self.traj_pub           = self.create_publisher(Path, self.traj_topic, 1)
+        self.err_pub            = self.create_publisher(Float32, self.error_topic, 10)
 
         # Scan (optional)
         qos_scan = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST)
@@ -232,6 +277,27 @@ class PurePursuitFollower(Node):
         self.goal_stop_latch = False
         self.goal_dwell_until: Optional[Time] = None
 
+        # AMCL trajectory building
+        self.traj_msg = Path()
+        self.traj_msg.header.frame_id = self.global_frame
+        self._traj_last_time = 0.0
+        self._traj_last_xy = None  # (x,y)
+        self._t0 = time.time()
+
+        # Error log buffers
+        self.err_times: List[float] = []
+        self.err_vals: List[float] = []
+        self.err_near_idx: List[int] = []
+        self.traj_x: List[float] = []
+        self.traj_y: List[float] = []
+
+        # Files/dirs for plots
+        self._path_dir = self._resolve_path_dir()
+        if not self.plot_dir:
+            self.plot_dir = os.path.join(self._path_dir, 'plots')
+        os.makedirs(self.plot_dir, exist_ok=True)
+        self.csv_path = os.path.join(self.plot_dir, self.log_csv_name)
+
         # Publish static/full path & goal once up front
         self._publish_full_path_once()
         self._publish_goal_every_cycle = True  # publish goal each loop for convenience in RViz
@@ -244,6 +310,8 @@ class PurePursuitFollower(Node):
             f"corner_slowdown={'ON' if self.allow_corner_slowdown else 'OFF'}  "
             f"mode={self.mode}"
         )
+        self.get_logger().info(f"AMCL trajectory topic: {self.traj_topic}  | error topic: {self.error_topic}")
+        self.get_logger().info(f"Plots/CSV dir: {self.plot_dir}")
 
     # ---------------- Path loading ----------------
     def _resolve_path_dir(self) -> str:
@@ -360,6 +428,8 @@ class PurePursuitFollower(Node):
     def _amcl_cb(self, msg: PoseWithCovarianceStamped):
         self.last_amcl_pose = msg
         self.last_amcl_time = self.get_clock().now()
+        # Also try to append to trajectory here (higher-rate than main loop)
+        self._maybe_append_traj_from_pose_msg(msg)
 
     # ------------------- Pose getters -------------------
     def _pose_from_amcl(self) -> Optional[Tuple[float,float,float]]:
@@ -423,7 +493,6 @@ class PurePursuitFollower(Node):
         return math.atan2(float(d[1]), float(d[0])) if np.linalg.norm(d) > 1e-9 else 0.0
 
     def _goal_heading(self) -> float:
-        # heading of last segment
         if len(self.path_xy) >= 2:
             d = self.path_xy[-1] - self.path_xy[-2]
             if np.linalg.norm(d) > 1e-9:
@@ -482,7 +551,6 @@ class PurePursuitFollower(Node):
 
     def _publish_full_path_once(self):
         self.path_full_pub.publish(self._build_path_msg(self.path_xy))
-        # Publish goal once (we'll also refresh each loop if desired)
         self._publish_goal_pose()
 
     def _publish_goal_pose(self):
@@ -494,13 +562,9 @@ class PurePursuitFollower(Node):
         ps.pose.orientation.w = 1.0
         self.goal_pub.publish(ps)
 
-    def _publish_dynamic_paths(self, idx_near: int):
-        # DONE: from start up to current nearest index (include idx_near)
+    def _publish_dynamic_remaining(self, idx_near: int):
         idx_near = max(0, min(int(idx_near), len(self.path_xy)-1))
-        done_xy = self.path_xy[:idx_near+1]
         rem_xy  = self.path_xy[idx_near:] if idx_near < len(self.path_xy) else self.path_xy[-1:]
-
-        self.path_done_pub.publish(self._build_path_msg(done_xy))
         self.path_remaining_pub.publish(self._build_path_msg(rem_xy))
 
     def _pub_lookahead(self, x, y):
@@ -545,12 +609,55 @@ class PurePursuitFollower(Node):
         m.color.a = 0.8; m.color.r = 0.2; m.color.g = 0.4; m.color.b = 1.0
         self.marker_pub.publish(m)
 
+    # ------------------- AMCL trajectory helpers -------------------
+    def _maybe_append_traj_from_pose_msg(self, msg: PoseWithCovarianceStamped):
+        # Decimate by time and distance
+        t_now = time.time() - self._t0
+        if (t_now - self._traj_last_time) < self.traj_sample_dt:
+            return
+        p = msg.pose.pose.position
+        xy = (float(p.x), float(p.y))
+        if self._traj_last_xy is not None:
+            ds = math.hypot(xy[0] - self._traj_last_xy[0], xy[1] - self._traj_last_xy[1])
+            if ds < self.traj_sample_ds:
+                return
+        self._append_traj_point(xy, t_now)
+
+    def _append_traj_point(self, xy, t_now):
+        # Update history arrays
+        self.traj_x.append(xy[0]); self.traj_y.append(xy[1])
+        if len(self.traj_x) > self.traj_max_pts:
+            self.traj_x.pop(0); self.traj_y.pop(0)
+
+        # Update Path message
+        ps = PoseStamped()
+        self.traj_msg.header.frame_id = self.global_frame
+        self.traj_msg.header.stamp = self.get_clock().now().to_msg()
+        ps.header = self.traj_msg.header
+        ps.pose.position.x = xy[0]; ps.pose.position.y = xy[1]; ps.pose.orientation.w = 1.0
+        self.traj_msg.poses.append(ps)
+        if len(self.traj_msg.poses) > self.traj_max_pts:
+            self.traj_msg.poses.pop(0)
+        self.traj_pub.publish(self.traj_msg)
+
+        # Cross-track error vs A* path
+        idx = self._nearest_index(xy[0], xy[1], self.idx_near)
+        dx = xy[0] - float(self.path_xy[idx,0]); dy = xy[1] - float(self.path_xy[idx,1])
+        err = math.hypot(dx, dy)
+        self.err_pub.publish(Float32(data=float(err)))
+        self.err_times.append(t_now); self.err_vals.append(err); self.err_near_idx.append(idx)
+        if len(self.err_times) > self.traj_max_pts:
+            self.err_times.pop(0); self.err_vals.pop(0); self.err_near_idx.pop(0)
+
+        # Bookkeeping
+        self._traj_last_time = t_now
+        self._traj_last_xy = xy
+
     # ------------------- Main control loop -------------------
     def _loop(self):
         # Handle dwell/latched stop (hold still)
         if self.goal_stop_latch:
             if self.goal_dwell_until is None or self.get_clock().now() <= self.goal_dwell_until:
-                # Optional final align while dwelling
                 v = 0.0
                 w = 0.0
                 if self.goal_final_align:
@@ -563,7 +670,6 @@ class PurePursuitFollower(Node):
                 self._send(v, w)
                 return
             else:
-                # After dwell, keep zero and stay latched
                 self._send(0.0, 0.0)
                 return
 
@@ -577,12 +683,12 @@ class PurePursuitFollower(Node):
         self.idx_near = self._nearest_index(rx, ry, self.idx_near)
         s_near = self.s[self.idx_near]
 
-        # Publish dynamic RViz views
-        self._publish_dynamic_paths(self.idx_near)
+        # Publish dynamic RViz (remaining only; AMCL traj handled separately)
+        self._publish_dynamic_remaining(self.idx_near)
         if self._publish_goal_every_cycle:
             self._publish_goal_pose()
 
-        # -------- ALIGN MODE (turn-in-place to face the route) --------
+        # -------- ALIGN MODE --------
         if self.mode == 'ALIGN':
             s_des = min(self.s[-1], s_near + max(0.2, self.align_preview))
             hdg_des = self._path_heading_at_s(s_des)
@@ -618,9 +724,9 @@ class PurePursuitFollower(Node):
         else:
             Ld = clamp(Ld_vel, self.Ld_min, self.Ld_max)
 
-        # >>> NEW: clamp lookahead near the goal so target doesn't go past goal <<<
+        # Clamp lookahead near the goal
         if remaining < self.goal_slowdown_dist:
-            Ld_cap = max(0.5*self.Ld_min, self.Ld_goal_scale * remaining)  # allow smaller than Ld_min near goal
+            Ld_cap = max(0.5*self.Ld_min, self.Ld_goal_scale * remaining)
             Ld = min(Ld, max(0.05, Ld_cap))
 
         # target point at s + Ld
@@ -639,7 +745,7 @@ class PurePursuitFollower(Node):
         self.kappa_f = (1.0 - self.kappa_alpha) * self.kappa_f + self.kappa_alpha * kappa_raw
         kappa_use = self.kappa_f
 
-        # Path heading ahead for mild PD (keeps corners tight w/o braking)
+        # Path heading ahead for mild PD (keeps corners tight)
         hdg_path = self._path_heading_at_s(min(self.s[-1], s_target + 0.5 * Ld))
         brg_err = wrap(hdg_path - ryaw)
         heading_kp = 0.4
@@ -665,12 +771,11 @@ class PurePursuitFollower(Node):
                 x = (rmin - self.front_stop) / max(1e-6, (self.front_clear - self.front_stop))
                 v_des *= clamp(x, 0.0, 1.0)
 
-        # >>> NEW: Smooth near-goal braking funnel (cubic ease-out) <<<
-        # starts easing inside goal_slowdown_dist and can go below v_min if allowed
+        # Smooth near-goal braking funnel (cubic ease-out)
         v_floor = self.v_min
         if remaining < self.goal_slowdown_dist:
             r = remaining / max(1e-6, self.goal_slowdown_dist)  # 1 → far, 0 → at goal
-            ease = r*r*(3.0 - 2.0*r)  # smoothstep
+            ease = r*r*(3.0 - 2.0*r)
             v_des = v_des * ease
             if self.allow_below_vmin_near_goal:
                 v_floor = 0.0
@@ -680,13 +785,13 @@ class PurePursuitFollower(Node):
         v_goal_cap = math.sqrt(max(0.0, 2.0*self.decel_max*rem_eff))
         v_des = min(v_des, v_goal_cap)
 
-        # Apply floor AFTER goal funnel logic
+        # Floor AFTER funnel
         v_des = max(v_floor, v_des)
 
         # Accel limiting
         dv = v_des - self.v_prev
         dv_max = (self.accel_max if dv > 0.0 else self.decel_max) * self.dt
-        v_cmd = clamp(self.v_prev + clamp(dv, -dv_max, dv_max), 0.0, 5.0)  # 5.0 is a sanity cap
+        v_cmd = clamp(self.v_prev + clamp(dv, -dv_max, dv_max), 0.0, 5.0)  # sanity cap
 
         # Angular velocity: FF + mild PD
         w_ff = v_cmd * kappa_use
@@ -697,7 +802,6 @@ class PurePursuitFollower(Node):
         if self.stop_at_goal and (remaining <= self.goal_pos_tol):
             self.goal_stop_latch = True
             self.goal_dwell_until = self.get_clock().now() + Duration(seconds=self.goal_dwell_s)
-            # zero linear; do a quick final align while dwelling (handled at top)
             self._send(0.0, 0.0)
             self.v_prev = 0.0
             return
@@ -711,12 +815,70 @@ class PurePursuitFollower(Node):
             self._pub_lookahead(gx, gy)
             self._pub_marker_lookahead(gx, gy)
 
+        # Also ensure the AMCL trajectory republishes at least at loop rate if no AMCL callback yet
+        if self.last_amcl_pose is not None:
+            # try decimated append from last AMCL pose again
+            self._maybe_append_traj_from_pose_msg(self.last_amcl_pose)
+
     # ------------------- cmd_vel helper -------------------
     def _send(self, v, w):
         msg = Twist()
         msg.linear.x = float(v)
         msg.angular.z = float(w)
         self.cmd_pub.publish(msg)
+
+    # ------------------- artifacts (CSV/plots) -------------------
+    def save_artifacts(self):
+        # CSV
+        try:
+            with open(self.csv_path, 'w') as fp:
+                fp.write("t_sec,error_m,nearest_idx,x_amcl,y_amcl\n")
+                for t, e, i, x, y in zip(self.err_times, self.err_vals, self.err_near_idx, self.traj_x, self.traj_y):
+                    fp.write(f"{t:.3f},{e:.6f},{i},{x:.6f},{y:.6f}\n")
+            self.get_logger().info(f"[SAVE] Error CSV: {self.csv_path}")
+        except Exception as ex:
+            self.get_logger().warn(f"Could not save CSV: {ex}")
+
+        if not self.save_plots or not _HAS_MPL:
+            if not _HAS_MPL:
+                self.get_logger().warn("matplotlib not available — skipping PNG plots.")
+            return
+
+        # Error plot
+        try:
+            if len(self.err_times) >= 2:
+                fig = plt.figure()
+                plt.plot(self.err_times, self.err_vals)
+                plt.xlabel("time [s]")
+                plt.ylabel("cross-track error [m]")
+                plt.title("Pure Pursuit cross-track error vs A* path")
+                plt.grid(True)
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                out1 = os.path.join(self.plot_dir, f"pp_error_{ts}.png")
+                fig.savefig(out1, dpi=180, bbox_inches='tight')
+                plt.close(fig)
+                self.get_logger().info(f"[SAVE] Error plot: {out1}")
+        except Exception as ex:
+            self.get_logger().warn(f"Could not save error plot: {ex}")
+
+        # Trajectory vs path overlay
+        try:
+            if len(self.traj_x) >= 2 and len(self.path_xy) >= 2:
+                fig2 = plt.figure()
+                px, py = self.path_xy[:,0], self.path_xy[:,1]
+                plt.plot(px, py, label="A* path")
+                plt.plot(self.traj_x, self.traj_y, label="AMCL trajectory")
+                plt.axis('equal')
+                plt.xlabel("x [m]"); plt.ylabel("y [m]")
+                plt.title("Trajectory vs A* path (map frame)")
+                plt.legend(); plt.grid(True)
+                ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                out2 = os.path.join(self.plot_dir, f"pp_traj_vs_path_{ts}.png")
+                fig2.savefig(out2, dpi=180, bbox_inches='tight')
+                plt.close(fig2)
+                self.get_logger().info(f"[SAVE] Trajectory overlay: {out2}")
+        except Exception as ex:
+            self.get_logger().warn(f"Could not save trajectory plot: {ex}")
 
 
 def main():
@@ -731,6 +893,11 @@ def main():
             node._send(0.0, 0.0)
         except Exception:
             pass
+        # Save artifacts (CSV + plots) on shutdown
+        try:
+            node.save_artifacts()
+        except Exception as ex:
+            node.get_logger().warn(f"save_artifacts() failed: {ex}")
         node.destroy_node()
         rclpy.shutdown()
 

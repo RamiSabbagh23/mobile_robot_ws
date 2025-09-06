@@ -302,6 +302,9 @@
       <odometry_frame>odom</odometry_frame>
       <robot_base_frame>base_link</robot_base_frame>
       <update_rate>50</update_rate>
+      <odometry_source>encoder</odometry_source>
+      <odometry_noise linear_mean="0.0" linear_stddev="0.01"
+                  angular_mean="0.0" angular_stddev="0.005"/>
     </plugin>
     <plugin name="joint_state_publisher" filename="libgazebo_ros_joint_state_publisher.so">
       <ros>
