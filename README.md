@@ -4,6 +4,14 @@
 A ROS 2 (Humble) workspace designed for simulating a mobile robot navigating through a maze using Gazebo for physics simulation, SLAM Toolbox for mapping and localization, RViz for real-time visualization, and an autonomous exploration node.
 
 ---
+https://github.com/RamiSabbagh23/mobile_robot_ws/releases/tag/v1.0-results
+## 🎥 Results Video
+
+The following video demonstrates the mobile robot simulation results, including Gazebo simulation, maze navigation, SLAM/localization, A* path planning, and Pure Pursuit trajectory tracking.
+
+[Watch / download the results video](https://github.com/RamiSabbagh23/mobile_robot_ws/releases/tag/v1.0-results)
+
+---
 
 ## 🗂️ Workspace Structure
 
